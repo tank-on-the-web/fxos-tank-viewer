@@ -1,0 +1,444 @@
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="mobile-web-app-capable" content="yes">
+
+<script src="JSARToolKit.js"></script>
+<script src="magi.js"></script>
+<script src="utils.js"></script>
+<script src="hostname.js"></script>
+<script src="photos.js"></script>
+<script src="webrtc.js"></script>
+<script src="socket.js"></script>
+<script>
+  var SCALE = 1.0;
+  if (navigator.userAgent.match(/^Mozilla\/\d+.\d+ \(Mobile/)) {
+    SCALE = 2.5;
+  }
+  console.log('SCALE:', SCALE);
+  var VIEW_HEIGHT = window.innerHeight;
+  var VIEW_WIDTH  = Math.floor(VIEW_HEIGHT * 4/3); // w:h=4:3
+  console.log('View:', VIEW_WIDTH, 'x', VIEW_HEIGHT);
+
+  var CANVAS_WIDTH = Math.floor(VIEW_WIDTH / SCALE);
+  var CANVAS_HEIGHT = Math.floor(VIEW_HEIGHT / SCALE);
+  console.log('Canvas:', CANVAS_WIDTH, 'x', CANVAS_HEIGHT);
+
+  if (screen.mozLockOrientation) {
+    console.log('locking orientation');
+    var allowed = screen.mozLockOrientation('landscape');
+    if (allowed) {
+      console.log('locked');
+    } else {
+      console.log('not allowed to lock orientation');
+    }
+  }
+
+  var WEBRTC_PORT = 8080;
+  var SOCKET_PORT = 7090;
+
+  threshold = 128;
+  DEBUG = false;
+
+  // var socket = new Socket(HOST, SOCKET_PORT, onMessage);
+  var socket;
+  var isLockOn = false;
+
+  photos = Photos.map(Image.load);
+
+  var video;
+
+var getUserMedia = function(t, onsuccess, onerror) {
+  if (navigator.getUserMedia) {
+    return navigator.getUserMedia(t, onsuccess, onerror);
+  } else if (navigator.webkitGetUserMedia) {
+    return navigator.webkitGetUserMedia(t, onsuccess, onerror);
+  } else if (navigator.mozGetUserMedia) {
+    return navigator.mozGetUserMedia(t, onsuccess, onerror);
+  } else if (navigator.msGetUserMedia) {
+    return navigator.msGetUserMedia(t, onsuccess, onerror);
+  } else {
+    onerror(new Error("No getUserMedia implementation found."));
+  }
+};
+
+var URL = window.URL || window.webkitURL;
+var createObjectURL = URL.createObjectURL || webkitURL.createObjectURL;
+if (!createObjectURL) {
+  throw new Error("URL.createObjectURL not found.");
+}
+
+  function startGetUserMedia(errorCB) {
+    errorCB = errorCB || function(error) { alert(error.toString()); };
+    getUserMedia({'video': true},
+      function(stream) {
+        video = document.createElement('video');
+        video.width = CANVAS_WIDTH;
+        video.height = CANVAS_HEIGHT;
+        video.loop = true;
+        video.volume = 0;
+        video.autoplay = true;
+        video.style.display = 'none';
+        video.src = URL.createObjectURL(stream);
+        document.body.appendChild(video);
+        main();
+      },
+      errorCB
+    );
+  }
+
+  function startWebRTC(server, errorCB) {
+    errorCB = errorCB || function(error) { alert(error.toString()); };
+    WebRTC.start(server, WEBRTC_PORT, function (stream) {
+      video = document.createElement('video');
+      video.width = CANVAS_WIDTH;
+      video.height = CANVAS_HEIGHT;
+      video.loop = true;
+      video.volume = 0;
+      video.autoplay = true;
+      video.style.display = 'none';
+      video.src = URL.createObjectURL(stream);
+      document.body.appendChild(video);
+      main();
+    },
+    function (error) {
+      if (video) {
+        video.src = '';
+      }
+      errorCB(error);
+    });
+  }
+
+  function startMjpgStream(errorCB) {
+    errorCB = errorCB || function(error) { alert(error.toString()); };
+    var isMjpgLoaded = false;
+    var img = document.createElement('img');
+    img.style.width = CANVAS_WIDTH;
+    img.style.height = CANVAS_HEIGHT;
+    img.src = "/?action=stream";
+    img.onload = function () {
+      if (!isMjpgLoaded) {
+        isMjpgLoaded = true;
+        video = img;
+        video.style.display = 'none';
+        document.body.appendChild(video);
+        main();
+      }
+    }
+    img.onerror = errorCB;
+  }
+
+  window.onload = function() {
+    var server = localStorage.getItem('KEY_SERVER');
+    if (!server) {
+      server = prompt('Input server IP address');
+      localStorage.setItem('KEY_SERVER', server);
+    }
+    console.log('server: ', server);
+
+    function onWebRTCError(error) {
+      console.log(error);
+      server = prompt('Failed to establish WebRTC. Input server IP address.');
+      localStorage.setItem('KEY_SERVER', server);
+      // retry
+      startWebRTC(server, onWebRTCError);
+      socket = new Socket(server, SOCKET_PORT, onMessage);
+    }
+    startWebRTC(server, onWebRTCError);
+    socket = new Socket(server, SOCKET_PORT, onMessage);
+  }
+
+  function main() {
+    byId('loading').style.display = 'none';
+    var canvas = document.createElement('canvas');
+    canvas.width = CANVAS_WIDTH;
+    canvas.height = CANVAS_HEIGHT;
+    canvas.style.display = 'block';
+
+    var videoCanvas = document.createElement('canvas');
+    if (video.nodeName === 'VIDEO') {
+      videoCanvas.width = video.width;
+      videoCanvas.height = video.height;
+    } else {
+      videoCanvas.width = parseInt(video.style.width);
+      videoCanvas.height = parseInt(video.style.height);
+    }
+
+    var raster = new NyARRgbRaster_Canvas2D(canvas);
+    var param = new FLARParam(CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    var resultMat = new NyARTransMatResult();
+
+    var detector = new FLARMultiIdMarkerDetector(param, 120);
+    detector.setContinueMode(true);
+
+    var ctx = canvas.getContext('2d');
+    ctx.font = "24px URW Gothic L, Arial, Sans-serif";
+
+    var glCanvas = document.createElement('canvas');
+    // if (video.nodeName === 'VIDEO') {
+    //   glCanvas.style.webkitTransform = 'scale(-1.0, 1.0)';
+    //   glCanvas.style.transform = 'scale(-1.0, 1.0)';
+    // }
+    // glCanvas.width = 960;
+    // glCanvas.height = 720;
+    glCanvas.width = VIEW_WIDTH;
+    glCanvas.height = VIEW_HEIGHT;
+    var s = glCanvas.style;
+    document.body.appendChild(glCanvas);
+    display = new Magi.Scene(glCanvas);
+    display.drawOnlyWhenChanged = true;
+    param.copyCameraMatrix(display.camera.perspectiveMatrix, 10, 10000);
+    display.camera.useProjectionMatrix = true;
+    var videoTex = new Magi.FlipFilterQuad();
+    videoTex.material.textures.Texture0 = new Magi.Texture();
+    videoTex.material.textures.Texture0.image = videoCanvas;
+    videoTex.material.textures.Texture0.generateMipmaps = false;
+    display.scene.appendChild(videoTex);
+
+    var times = [];
+    var pastResults = {};
+    var lastTime = 0;
+    var cubes = {};
+    var images = [];
+
+    window.updateImage = function() {
+      display.changed = true;
+    }
+    window.addEventListener('keydown', function(ev) {
+      if (Key.match(ev, Key.LEFT)) {
+        images.forEach(function(e){ e.setImage(photos.rotate(true)); });
+      } else if (Key.match(ev, Key.RIGHT)) {
+        images.forEach(function(e){ e.setImage(photos.rotate(false)); });
+      }
+    }, false);
+
+    setInterval(function(){
+      if (video.nodeName === 'VIDEO') {
+        if (video.ended) video.play();
+        if (video.paused) return;
+        if (window.paused) return;
+        if (video.currentTime == video.duration) {
+          video.currentTime = 0;
+        }
+        if (video.currentTime == lastTime) return;
+        lastTime = video.currentTime;
+        // In WebRTC, video size changes automatically
+        // console.log('size=' + video.videoWidth + 'x' + video.videoHeight);
+        videoCanvas.getContext('2d').drawImage(video, 0,0,video.videoWidth,video.videoHeight, 0,0,CANVAS_WIDTH,CANVAS_HEIGHT);
+      } else {
+        videoCanvas.getContext('2d').drawImage(video,0,0);
+      }
+
+      ctx.drawImage(videoCanvas, 0,0,CANVAS_WIDTH,CANVAS_HEIGHT);
+      var dt = new Date().getTime();
+
+      videoTex.material.textures.Texture0.changed = true;
+
+      canvas.changed = true;
+      display.changed = true;
+
+      var t = new Date();
+      var detected = detector.detectMarkerLite(raster, threshold);
+      if (detected > 0) {
+        if (!isLockOn) {
+          isLockOn = true;
+          onLockOnChanged(isLockOn);
+        }
+      } else {
+        if (isLockOn) {
+          isLockOn = false;
+          onLockOnChanged(isLockOn);
+        }
+      }
+      for (var idx = 0; idx<detected; idx++) {
+        var id = detector.getIdMarkerData(idx);
+        //read data from i_code via Marsial--Marshal経由で読み出す
+        var currId;
+        if (id.packetLength > 4) {
+          currId = -1;
+        }else{
+          currId=0;
+          //最大4バイト繋げて１個のint値に変換
+          for (var i = 0; i < id.packetLength; i++ ) {
+            currId = (currId << 8) | id.getPacketData(i);
+            //console.log("id[", i, "]=", id.getPacketData(i));
+          }
+        }
+        //console.log("[add] : ID = " + currId);
+        if (!pastResults[currId]) {
+          pastResults[currId] = {};
+        }
+        detector.getTransformMatrix(idx, resultMat);
+        pastResults[currId].age = 0;
+        pastResults[currId].transform = Object.asCopy(resultMat);
+      }
+      for (var i in pastResults) {
+        var r = pastResults[i];
+        if (r.age > 1) {
+          delete pastResults[i];
+          // cubes[i].image.setImage(photos.rotate());
+          cubes[i].image.setImage(photos[0]);
+        }
+        r.age++;
+      }
+      for (var i in cubes) cubes[i].display = false;
+      for (var i in pastResults) {
+        if (!cubes[i]) {
+          var pivot = new Magi.Node();
+          pivot.transform = mat4.identity();
+          pivot.setScale(80);
+          var image = new Magi.Image();
+          image
+            .setAlign(image.centerAlign, image.centerAlign)
+            .setPosition(0, 0, 0)
+            .setAxis(0,0,1)
+            .setAngle(Math.PI)
+            .setSize(1.5);
+          image.setImage = function(src) {
+            var img = E.canvas(CANVAS_WIDTH,CANVAS_WIDTH);
+            Magi.Image.setImage.call(this, img);
+            this.texture.generateMipmaps = false;
+            var self = this;
+            src.onload = function(){
+              var w = this.width, h = this.height;
+              var f = Math.min(CANVAS_WIDTH/w, CANVAS_WIDTH/h);
+              w = (w*f);
+              h = (h*f);
+              img.getContext('2d').drawImage(this, (CANVAS_WIDTH-w)/2,(CANVAS_WIDTH-h)/2,w,h);
+              self.texture.changed = true;
+              self.setSize(6*Math.max(w/h, h/w));
+            };
+            if (Object.isImageLoaded(src)) {
+              src.onload();
+            }
+          };
+          // image.setImage(photos.rotate());
+          image.setImage(photos[0]);
+          images.push(image);
+          pivot.image = image;
+          pivot.appendChild(image);
+          /*var txt = new Magi.Text(i);
+          txt.setColor('#f0f0d8');
+          txt.setFont('URW Gothic L, Arial, Sans-serif');
+          txt.setFontSize(32);
+          txt.setAlign(txt.leftAlign, txt.bottomAlign)
+            .setPosition(-0.45, -0.48, -0.51)
+            .setScale(1/190);*/
+          display.scene.appendChild(pivot);
+          cubes[i] = pivot;
+        }
+        cubes[i].display = true;
+        var mat = pastResults[i].transform;
+        var cm = cubes[i].transform;
+        cm[0] = mat.m00;
+        cm[1] = -mat.m10;
+        cm[2] = mat.m20;
+        cm[3] = 0;
+        cm[4] = mat.m01;
+        cm[5] = -mat.m11;
+        cm[6] = mat.m21;
+        cm[7] = 0;
+        cm[8] = -mat.m02;
+        cm[9] = mat.m12;
+        cm[10] = -mat.m22;
+        cm[11] = 0;
+        cm[12] = mat.m03;
+        cm[13] = -mat.m13;
+        cm[14] = mat.m23;
+        cm[15] = 1;
+      }
+    }, 15);
+  }
+
+  // http://on-jin.com/sound/sen.php  
+  var bombs = [
+    '/data/sen_ge_bom15.mp3',
+    '/data/sen_ge_taihou08.mp3'
+  ];
+  var hits = [
+    '/data/sen_ge_bom16.mp3',
+    '/data/sen_ge_hasai01.mp3'
+  ];
+  function makeAudio(container) {
+    for (var i = 0; i < container.length; i++) {
+      var audio = new Audio();
+      audio.src = container[i];
+      container[i] = audio;
+    }
+  }
+  makeAudio(bombs);
+  makeAudio(hits);
+
+  var bombIndex = 0;
+  function playBomb() {
+    var audio = bombs[bombIndex++ % bombs.length]
+    audio.play();
+  }
+
+  var hitIndex = 0;
+  function playHit() {
+    setTimeout(function () {
+      var audio = hits[hitIndex++ % hits.length]
+      audio.play();
+      byId('overlay').style.display = 'block';
+      setTimeout(function () {
+        byId('overlay').style.display = 'none';
+      }, 400);
+    }, 500);
+  }
+
+  function onLockOnChanged(lockon) {
+    console.log("lockon=", lockon);
+    var msg = {
+      lockon: lockon
+    };
+    socket.send(msg);
+  }
+
+  function onMessage(msg) {
+    if (msg.fire) {
+      console.log('fire!');
+      playBomb();
+    }
+    if (msg.hit) {
+      console.log('hit!!');
+      playHit();
+    }
+  }
+
+</script>
+<style>
+  html {
+    background: black;
+    color: white;
+  }
+  body {
+    margin: 0;
+    padding: 0;
+    margin-top: 20px;
+    text-align: center;
+  }
+  #loading {
+    font-size: 80px;
+    font-weight: bold;
+    font-family: Times;
+  }
+  .overlay {
+    position: absolute;
+    top: 0px;
+    width:100%;
+    height:100%;
+    display: none;
+  }
+  .flash {
+    background: rgba(255,255,250,0.7);
+  }
+</style>
+
+</head>
+<body>
+<div id="loading">Hang on, I'm loading stuff...</div>
+<div id="overlay" class="overlay flash"></div>
+</body>
+</html>
