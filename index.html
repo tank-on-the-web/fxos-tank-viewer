@@ -176,6 +176,7 @@ if (!createObjectURL) {
     byId('loading').style.display = 'none';
     if (!USE_AR) {
       video.style.display = 'block';
+      video.style.margin = '0 auto 0 auto';
       return;
     }
     var canvas = document.createElement('canvas');
