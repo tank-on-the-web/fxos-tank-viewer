@@ -11,18 +11,24 @@
 <script src="webrtc.js"></script>
 <script src="socket.js"></script>
 <script>
+  var USE_AR = true;
   var SCALE = 1.0;
-  if (navigator.userAgent.match(/^Mozilla\/\d+.\d+ \(Mobile/)) {
-    SCALE = 2.5;
-  }
-  console.log('SCALE:', SCALE);
   var VIEW_HEIGHT = window.innerHeight;
   var VIEW_WIDTH  = Math.floor(VIEW_HEIGHT * 4/3); // w:h=4:3
   console.log('View:', VIEW_WIDTH, 'x', VIEW_HEIGHT);
 
   var CANVAS_WIDTH = Math.floor(VIEW_WIDTH / SCALE);
   var CANVAS_HEIGHT = Math.floor(VIEW_HEIGHT / SCALE);
-  console.log('Canvas:', CANVAS_WIDTH, 'x', CANVAS_HEIGHT);
+
+  function scaleCanvas() {
+    if (USE_AR && navigator.userAgent.match(/^Mozilla\/\d+.\d+ \(Mobile/)) {
+      SCALE = 2.5;
+    }
+    console.log('SCALE:', SCALE);
+    CANVAS_WIDTH = Math.floor(VIEW_WIDTH / SCALE);
+    CANVAS_HEIGHT = Math.floor(VIEW_HEIGHT / SCALE);
+    console.log('Canvas:', CANVAS_WIDTH, 'x', CANVAS_HEIGHT);
+  }
 
   if (screen.mozLockOrientation) {
     console.log('locking orientation');
@@ -129,6 +135,24 @@ if (!createObjectURL) {
   }
 
   window.onload = function() {
+    var useAR = localStorage.getItem('KEY_USE_AR');
+    if (useAR === null) {
+      useAR = true;
+    } else if (typeof useAR === 'string') {
+      useAR = JSON.parse(useAR);
+    }
+    byId("use-ar").checked = useAR;
+    byId("start").onclick = function() {
+      USE_AR = byId("use-ar").checked;
+      localStorage.setItem('KEY_USE_AR', USE_AR);
+      scaleCanvas();
+      byId('ar-select').style.display = 'none';
+      byId('loading').style.display = 'block';
+      start();
+    }
+  }
+
+  function start() {
     var server = localStorage.getItem('KEY_SERVER');
     if (!server) {
       server = prompt('Input server IP address');
@@ -150,6 +174,10 @@ if (!createObjectURL) {
 
   function main() {
     byId('loading').style.display = 'none';
+    if (!USE_AR) {
+      video.style.display = 'block';
+      return;
+    }
     var canvas = document.createElement('canvas');
     canvas.width = CANVAS_WIDTH;
     canvas.height = CANVAS_HEIGHT;
@@ -419,10 +447,25 @@ if (!createObjectURL) {
     margin-top: 20px;
     text-align: center;
   }
+  #ar-select {
+    font-size: 40px;
+  }
+  #ar-select > input[type=checkbox] {
+    width: 50px;
+    height: 50px;
+    margin-right: 15px;
+  }
+  #ar-select > button {
+    margin-top: 30px;
+    width: 200px;
+    height: 60px;
+    font-size: 40px;
+  }
   #loading {
     font-size: 80px;
     font-weight: bold;
     font-family: Times;
+    display: none;
   }
   .overlay {
     position: absolute;
@@ -438,7 +481,12 @@ if (!createObjectURL) {
 
 </head>
 <body>
-<div id="loading">Hang on, I'm loading stuff...</div>
+<div id="ar-select">
+  <input type="checkbox" id="use-ar">Use AR
+  <br>
+  <button type="button" id="start">Start</button>
+</div>
+<div id="loading">Now Loading...</div>
 <div id="overlay" class="overlay flash"></div>
 </body>
 </html>
