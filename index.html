@@ -175,6 +175,8 @@ if (!createObjectURL) {
   function main() {
     byId('loading').style.display = 'none';
     if (!USE_AR) {
+      video.style.width = VIEW_WIDTH;
+      video.style.height = VIEW_HEIGHT;
       video.style.display = 'block';
       video.style.margin = '0 auto 0 auto';
       return;
